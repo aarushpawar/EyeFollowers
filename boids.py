@@ -314,18 +314,17 @@ class BoidsOptimized:
                     elif event.key == pygame.K_s:
                         self.show_stats = not self.show_stats
 
-            # Update gaze (skip some frames for performance)
-            if self.frame_count % 2 == 0:
-                ret, frame = self.cap.read()
-                if ret:
-                    frame = cv2.flip(frame, 1)
-                    gaze_point = self.tracker.predict_gaze(frame)
+            # Update gaze every frame for maximum responsiveness
+            ret, frame = self.cap.read()
+            if ret:
+                frame = cv2.flip(frame, 1)
+                gaze_point = self.tracker.predict_gaze(frame)
 
-                    if gaze_point:
-                        gaze_x, gaze_y = gaze_point
-                        self.gaze_target = np.array([
-                            np.clip(gaze_x, 0, self.screen_width),
-                            np.clip(gaze_y, 0, self.screen_height)
+                if gaze_point:
+                    gaze_x, gaze_y = gaze_point
+                    self.gaze_target = np.array([
+                        np.clip(gaze_x, 0, self.screen_width),
+                        np.clip(gaze_y, 0, self.screen_height)
                         ])
 
             # Update physics
