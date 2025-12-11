@@ -3,6 +3,7 @@ import pygame
 import numpy as np
 import cv2
 import os
+import time
 from calibration import CalibrationUI
 from gaze import GazeTracker
 from collections import defaultdict
@@ -100,6 +101,11 @@ class BoidsOptimized:
         self.last_adjustment_time = 0
         self.gaze_frame_counter = 0
         self.last_frame = None
+
+        # Performance profiling
+        self.timing_enabled = False
+        self.timing_samples = {'gaze': [], 'physics': [], 'render': []}
+        self.last_timing_print = time.time()
 
     def _initialize_boids(self, count):
         """Initialize or resize boid arrays"""
@@ -210,8 +216,9 @@ class BoidsOptimized:
                         sep_dists = dists[sep_mask][:, np.newaxis]
                         # Negate to push AWAY from neighbors (diff points toward them)
                         sep_force = -np.sum(sep_diff / (sep_dists + 1e-6), axis=0)
-                        sep_mag = np.linalg.norm(sep_force)
-                        if sep_mag > 0:
+                        sep_mag_sq = np.dot(sep_force, sep_force)
+                        if sep_mag_sq > 1e-8:
+                            sep_mag = np.sqrt(sep_mag_sq)
                             sep_force = (sep_force / sep_mag) * self.max_speed - vel
                             sep_force = self.limit_magnitude(sep_force, self.max_force)
                             self.accelerations[i] += sep_force * 1.5
@@ -220,8 +227,9 @@ class BoidsOptimized:
                     align_mask = dists < 50
                     if np.any(align_mask):
                         avg_vel = np.mean(nearby_velocities[align_mask], axis=0)
-                        avg_mag = np.linalg.norm(avg_vel)
-                        if avg_mag > 0:
+                        avg_mag_sq = np.dot(avg_vel, avg_vel)
+                        if avg_mag_sq > 1e-8:
+                            avg_mag = np.sqrt(avg_mag_sq)
                             avg_vel = (avg_vel / avg_mag) * self.max_speed
                             align_force = avg_vel - vel
                             align_force = self.limit_magnitude(align_force, self.max_force)
@@ -232,8 +240,9 @@ class BoidsOptimized:
                     if np.any(coh_mask):
                         avg_pos = np.mean(nearby_positions[coh_mask], axis=0)
                         desired = avg_pos - pos
-                        dist_to_center = np.linalg.norm(desired)
-                        if dist_to_center > 0:
+                        dist_sq_to_center = np.dot(desired, desired)
+                        if dist_sq_to_center > 1e-8:
+                            dist_to_center = np.sqrt(dist_sq_to_center)
                             desired = (desired / dist_to_center) * self.max_speed
                             if dist_to_center < 100:
                                 desired *= dist_to_center / 100
@@ -243,8 +252,9 @@ class BoidsOptimized:
 
             # Seek gaze target
             to_gaze = self.gaze_target - pos
-            dist_to_gaze = np.linalg.norm(to_gaze)
-            if dist_to_gaze > 0:
+            dist_sq_to_gaze = np.dot(to_gaze, to_gaze)
+            if dist_sq_to_gaze > 1e-8:
+                dist_to_gaze = np.sqrt(dist_sq_to_gaze)
                 desired = (to_gaze / dist_to_gaze) * self.max_speed
                 if dist_to_gaze < 100:
                     desired *= dist_to_gaze / 100
@@ -300,6 +310,7 @@ class BoidsOptimized:
         print("\nControls:")
         print("  'c' - Toggle gaze cursor")
         print("  's' - Toggle stats")
+        print("  't' - Toggle performance timing")
         print("  'q' or ESC - Quit")
 
         running = True
@@ -316,9 +327,15 @@ class BoidsOptimized:
                         self.show_gaze_cursor = not self.show_gaze_cursor
                     elif event.key == pygame.K_s:
                         self.show_stats = not self.show_stats
+                    elif event.key == pygame.K_t:
+                        self.timing_enabled = not self.timing_enabled
+                        print(f"Performance timing: {'ON' if self.timing_enabled else 'OFF'}")
 
             # Update gaze every 2 frames (webcam is 30fps, simulation is 60fps)
             # This reduces gaze processing overhead by 50% with minimal latency impact
+            if self.timing_enabled:
+                t_gaze_start = time.perf_counter()
+
             self.gaze_frame_counter += 1
             if self.gaze_frame_counter % 2 == 0:
                 ret, frame = self.cap.read()
@@ -337,18 +354,42 @@ class BoidsOptimized:
                 # Skip webcam read on odd frames to avoid blocking
                 pass
 
+            if self.timing_enabled:
+                self.timing_samples['gaze'].append((time.perf_counter() - t_gaze_start) * 1000)
+                t_physics_start = time.perf_counter()
+
             # Update physics
             self.flock_optimized()
             self.update()
 
+            if self.timing_enabled:
+                self.timing_samples['physics'].append((time.perf_counter() - t_physics_start) * 1000)
+                t_render_start = time.perf_counter()
+
             # Render
             self.draw_optimized()
+
+            if self.timing_enabled:
+                self.timing_samples['render'].append((time.perf_counter() - t_render_start) * 1000)
 
             # Draw gaze cursor
             if self.show_gaze_cursor:
                 gx, gy = self.gaze_target.astype(int)
                 pygame.draw.circle(self.screen, (255, 255, 255), (gx, gy), 20, 2)
                 pygame.draw.circle(self.screen, (255, 255, 255), (gx, gy), 3)
+
+            # Print timing stats every 3 seconds
+            if self.timing_enabled and time.time() - self.last_timing_print > 3.0:
+                if len(self.timing_samples['gaze']) > 0:
+                    print(f"\n=== Performance Timing (last {len(self.timing_samples['gaze'])} frames) ===")
+                    print(f"  Gaze:    {np.mean(self.timing_samples['gaze']):.2f}ms avg, {np.max(self.timing_samples['gaze']):.2f}ms max")
+                    print(f"  Physics: {np.mean(self.timing_samples['physics']):.2f}ms avg, {np.max(self.timing_samples['physics']):.2f}ms max")
+                    print(f"  Render:  {np.mean(self.timing_samples['render']):.2f}ms avg, {np.max(self.timing_samples['render']):.2f}ms max")
+                    total = np.mean(self.timing_samples['gaze']) + np.mean(self.timing_samples['physics']) + np.mean(self.timing_samples['render'])
+                    print(f"  Total:   {total:.2f}ms avg (target: {1000/self.target_fps:.2f}ms for {self.target_fps} FPS)")
+                    # Clear samples
+                    self.timing_samples = {'gaze': [], 'physics': [], 'render': []}
+                    self.last_timing_print = time.time()
 
             # Display stats
             if self.show_stats:
