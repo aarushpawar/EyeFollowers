@@ -98,6 +98,8 @@ class BoidsOptimized:
         # Performance tracking
         self.frame_count = 0
         self.last_adjustment_time = 0
+        self.gaze_frame_counter = 0
+        self.last_frame = None
 
     def _initialize_boids(self, count):
         """Initialize or resize boid arrays"""
@@ -201,12 +203,13 @@ class BoidsOptimized:
                 nearby_positions = nearby_positions[mask]
 
                 if len(dists) > 0:
-                    # Separation
+                    # Separation - push away from nearby boids
                     sep_mask = dists < 25
                     if np.any(sep_mask):
                         sep_diff = diff[sep_mask]
                         sep_dists = dists[sep_mask][:, np.newaxis]
-                        sep_force = np.sum(sep_diff / (sep_dists + 1e-6), axis=0)
+                        # Negate to push AWAY from neighbors (diff points toward them)
+                        sep_force = -np.sum(sep_diff / (sep_dists + 1e-6), axis=0)
                         sep_mag = np.linalg.norm(sep_force)
                         if sep_mag > 0:
                             sep_force = (sep_force / sep_mag) * self.max_speed - vel
@@ -314,18 +317,25 @@ class BoidsOptimized:
                     elif event.key == pygame.K_s:
                         self.show_stats = not self.show_stats
 
-            # Update gaze every frame for maximum responsiveness
-            ret, frame = self.cap.read()
-            if ret:
-                frame = cv2.flip(frame, 1)
-                gaze_point = self.tracker.predict_gaze(frame)
+            # Update gaze every 2 frames (webcam is 30fps, simulation is 60fps)
+            # This reduces gaze processing overhead by 50% with minimal latency impact
+            self.gaze_frame_counter += 1
+            if self.gaze_frame_counter % 2 == 0:
+                ret, frame = self.cap.read()
+                if ret:
+                    frame = cv2.flip(frame, 1)
+                    self.last_frame = frame
+                    gaze_point = self.tracker.predict_gaze(frame)
 
-                if gaze_point:
-                    gaze_x, gaze_y = gaze_point
-                    self.gaze_target = np.array([
-                        np.clip(gaze_x, 0, self.screen_width),
-                        np.clip(gaze_y, 0, self.screen_height)
-                        ])
+                    if gaze_point:
+                        gaze_x, gaze_y = gaze_point
+                        self.gaze_target = np.array([
+                            np.clip(gaze_x, 0, self.screen_width),
+                            np.clip(gaze_y, 0, self.screen_height)
+                            ])
+            else:
+                # Skip webcam read on odd frames to avoid blocking
+                pass
 
             # Update physics
             self.flock_optimized()
